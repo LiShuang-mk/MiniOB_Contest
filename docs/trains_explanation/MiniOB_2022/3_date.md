@@ -110,7 +110,7 @@ bool hash_date( const char *date, int &hash)
 	cur = date[index];
 
 	// day 
-	while ( cur != '\"' )
+	while ( cur != '\"' && cur != '\'' )
 	{
 		day *= 10;
 		if ( is_number( cur ) )
