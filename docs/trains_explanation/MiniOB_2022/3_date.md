@@ -161,6 +161,8 @@ bool hash_date( const char *date, int &hash)
 
 ### III. select
 
+#### i. 基本实现
+
 在此, 我们暂时考虑select * from \<table_name\>的简单情况 
 
 此处的关键其实在于当数据被select出来后, 如何与client交互, 或者说, 如何将时间戳还原成字符串显示到client上. 就这一点来说, 我们其实只需关心把结果写回到client的时机. 
@@ -242,3 +244,80 @@ std::string Value::dehash_date() const
 	return str;
 }
 ```
+
+#### ii. 关于where字句
+
+在原来的框架中, select语句已经实现了检查表和字段的存在性, 这些不需要我们修改, 但是关于where字句, 在语义分析阶段并没有对表的字段类型和值的类型匹配做检查, 例如: 
+
+```SQL
+CREATE TABLE date_table ( id INT, u_date DATE );
+SELECT * FROM date_table WHERE u_date = 2000;
+```
+使用一个INT类型的2000去尝试匹配DATE类型的u_date是不合法的, 这一点的检查需要我们自己实现. 
+
+在filter_stmt.cpp文件中, 修改函数create_filter_unit(), 如图: 
+
+![框架在此留白又我们去实现类型检查](../../pictures/trains_3_date/3_3_1.png)
+
+### IV. 关于索引 
+
+假设我们对DATE类型的字段创建索引, 那么当表格载入内存时, 索引应当在内存中结构化一个B+树, 对于B+树而言, 插入, 删除, 搜索等操作都需要比较属性值, 因此我们需要实现DATE在B+树中的属性比较才能让DATE类型的索引在内存中构建B+树, 否则按DATE索引select时会产生不可预期的问题. 
+
+进入bplus_tree.h文件中, 找到AttrCompare类, 修改其中的operator()函数, 如下: 
+
+```cpp
+int operator()( const char *v1, const char *v2 ) const
+	{
+		switch ( attr_type_ )
+		{
+			case INTS:
+			{
+				return common::compare_int( ( void * ) v1, ( void * ) v2 );
+			} break;
+			case FLOATS:
+			{
+				return common::compare_float( ( void * ) v1, ( void * ) v2 );
+			}
+			case CHARS:
+			{
+				return common::compare_string( ( void * ) v1, attr_length_, ( void * ) v2, attr_length_ );
+			}
+			case DATES:
+			{
+				return common::compare_int( ( void * ) v1, ( void * ) v2 );
+			}
+			default:
+			{
+				ASSERT( false, "unknown attr type. %d", attr_type_ );
+				return 0;
+			}
+		}
+	}
+```
+
+由于我们已经将DATE类型的数据hash成32位整型了, 所以可以直接使用已经实现好的compare_int()函数来实现DATE类型数据的比较. 
+
+### V. 小结
+
+综合上述的分析和代码修改, 总结需要改动或实现的地方如下:
+
+- lex
+	- 增加DATE类型的token
+	- 增加DATE值的token
+	- 增加DATE值的hash函数
+
+- yacc
+	- 在type的词法中将DATE类型的token转化为内部的枚举类型
+	- 在value的词法中将DATE值转化位内部的Value对象
+
+- Value类
+	- 修改AttrType枚举
+	- 修改attr_type_to_string()函数
+	- 增加针对DATE值的de_hash(), 返回日期的字符串
+	- 修改Value中其他与数据类型相关的操作函数
+
+- FilterStmt类
+	- 在create_filter_unit()中增加where字句的类型检查 
+
+- bplus_tree中的AttrCompoare类
+	- 增加DATE值的比较方法
